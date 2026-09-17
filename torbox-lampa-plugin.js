@@ -14,7 +14,7 @@
  * --------------------------------------------------------------------- */
 
 try {
-  console.log('[TorBox] boot strap', '51.2.13');
+  console.log('[TorBox] boot strap', '51.2.14');
   (function () {
   'use strict';
 
@@ -24,7 +24,7 @@ try {
   window[PLUGIN_FLAG] = true;
 
   // ───────────────────────────── Constants / Config ─────────────────────────────
-  const VERSION = '51.2.13';
+  const VERSION = '51.2.14';
 
   const CONST = {
     CACHE_LIMIT: 128,
@@ -2017,12 +2017,27 @@ try {
         poster: Lampa.Utils.cardImgBackgroundBlur(movie),
         id: movie.id,
         movie,
+        // Lampa's player reads the card from `card` (header title, footer info).
+        card: movie,
       };
       // Infer season/episode numbers when present
       const s = (cleanName || '').match(/[Ss](\d{1,2})/);
       const e = (cleanName || '').match(/[Ee](\d{1,3})/);
       if (s) cfg.season = parseInt(s[1], 10);
       if (e) cfg.episode = parseInt(e[1], 10);
+      // Episode without a season marker ("Show - 05.mkv"): Lampa treats it as season 1.
+      if (!s && e && movie.number_of_seasons) cfg.season = 1;
+      // Lampa only records playback progress when the config carries a timeline.
+      // Key on title/season/episode (Lampa's card.js convention) so the rotating
+      // TorBox link never invalidates it. TV cards keep the title in original_name.
+      const origTitle = movie.original_title || movie.original_name || movie.title || '';
+      const tlKey =
+        cfg.season != null && cfg.episode != null
+          ? [cfg.season, cfg.season > 10 ? ':' : '', cfg.episode, origTitle].join('')
+          : String(origTitle);
+      if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function') {
+        cfg.timeline = Lampa.Timeline.view(Lampa.Utils.hash(tlKey));
+      }
       return cfg;
     };
 
