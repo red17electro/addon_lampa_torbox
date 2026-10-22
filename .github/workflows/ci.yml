@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate plugin and docs
+      - name: Validate plugin, docs and committed legacy build
         run: npm run validate
 
       - name: Unit tests
@@ -29,5 +29,5 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
-      - name: E2E smoke (focus navigation)
+      - name: E2E smoke (plugin boot, card integration and focus navigation)
         run: npm run test:e2e

@@ -26,12 +26,19 @@ Current version: **51.2.14**
    ```
 3. Press `Enter` and restart Lampa.
 
+### Samsung 2020 TVs (Chromium 69)
+
+For the QE55Q80TAUXRU, install the separate `torbox-lampa-plugin.legacy.js` build.
+See [Samsung build, deployment and troubleshooting](docs/samsung-2020.md) for
+jsDelivr and accessible HTTPS hosting instructions. The URL works only after
+the generated file is committed and pushed. Enable only one TorBox plugin entry.
+
 ## Configuration
 
 `Settings` → `TorBox`:
 
 - **CORS proxy URL** — the proxy all requests go through. The reference proxy is built in; a URL you enter always takes precedence. Note: the proxy can see your API key, so only use a proxy you trust (HTTPS strongly recommended).
-- **API key** — your TorBox API key. A default key is baked in so the plugin works out of the box; a key you enter always takes precedence.
+- **API key** — your TorBox API key. Enter your own key; there is no embedded default API key.
 
 Advanced parameters (quality/audio/codec priority, excluded trackers, status polling, video extensions, custom parsers, debug and diagnostics) are hidden from the UI and run on sensible defaults. If needed, they can be overridden via the corresponding `torbox_*` keys in `localStorage`.
 
@@ -59,13 +66,18 @@ If you use custom parsers, add their domains to `ALLOWED_HOSTS` in the worker.
 
 ```bash
 npm ci
+npm run build:legacy
 npm run validate
 npm run test:unit
 npx playwright install chromium
 npm run test:e2e
 ```
 
-CI (GitHub Actions) runs the same steps on every push and pull request.
+Commit the generated legacy file after source changes. Validation checks its
+ES2018 syntax and rejects a missing or stale build. CI (GitHub Actions) runs
+validation, unit tests and browser tests on every push to main and pull request.
+The browser tests include actual modern/legacy plugin boot and card integration;
+they use current Chromium, so TV testing is still required.
 
 ### Manual TV checklist
 

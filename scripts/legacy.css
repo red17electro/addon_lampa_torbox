@@ -1,0 +1,8 @@
+/* Chromium 69 supports grid gap but ignores flex gap. Use margins here.
+   These rules are appended after the plugin stylesheet in the legacy build only. */
+.torbox-item__tech-bar { gap:0; }
+.torbox-item__tech-item { margin-right:.55em; margin-bottom:.55em; }
+.torbox-cached-toggle { gap:0; }
+.torbox-cached-toggle__label { margin-left:.5em; }
+.torbox-file-item { gap:0; }
+.torbox-file-download { margin-left:1em; }
