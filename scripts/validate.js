@@ -88,7 +88,7 @@ if (!/Lampa\.Manifest\.plugins\s*=\s*manifest/.test(plugin)) {
 if (!/for \(const p of passParsers\)/.test(plugin) || !/if \(normalized\.validCount > 0\)\s*{[\s\S]*?return\s*{/.test(plugin)) {
   fail('Expected parser failover loop to stop only on the first valid normalized result');
 }
-if (!/PUBLIC_PARSER_TIMEOUT_MS:\s*5\s*\*\s*1000/.test(plugin) || !/TORBOX_API_TIMEOUT_MS:\s*20\s*\*\s*1000/.test(plugin)) {
+if (!/PUBLIC_PARSER_TIMEOUT_MS:\s*15\s*\*\s*1000/.test(plugin) || !/TORBOX_API_TIMEOUT_MS:\s*20\s*\*\s*1000/.test(plugin)) {
   fail('Expected separate timeout constants for public parsers and TorBox API');
 }
 if (!/ParserHealth\.markFailure/.test(plugin) || !/cooldown_skip/.test(plugin)) {

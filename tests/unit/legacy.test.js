@@ -32,7 +32,10 @@ function loadPlugin(code, overrides = {}) {
     },
     document: {
       getElementById: () => null,
-      createElement: () => ({ textContent: '', innerHTML: '' }),
+      createElement: () => ({
+        textContent: '',
+        get innerHTML() { return String(this.textContent).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
+      }),
       head: { appendChild() {} },
     },
     Lampa: {
@@ -118,5 +121,105 @@ for (const variant of ['modern', 'legacy']) {
     });
     api.Config.apiKey = 'test-key';
     await assert.rejects(api.Api.myList(7), (error) => error.type === 'network' && error.timeoutMs === 20000);
+  });
+
+  test(`${variant}: blocked proxy falls back to direct parser without credentials`, async () => {
+    const calls = [];
+    const hash = 'a'.repeat(40);
+    const api = loadPlugin(source, { ...options, fetch: async (url, opt) => {
+      calls.push({ url, opt });
+      if (new URL(url).hostname === 'proxy.example.test') throw new TypeError('Failed to fetch');
+      return { status: 200, text: async () => JSON.stringify({ Results: [{ MagnetUri: `magnet:?xt=urn:btih:${hash}` }] }) };
+    } });
+    api.Config.proxyUrl = 'https://proxy.example.test';
+    api.Config.apiKey = 'private-test-key';
+    const result = await api.Api.searchPublicTrackers({ name: 'Example', first_air_date: '2019-01-01' }, new AbortController().signal);
+    assert.equal(result.entriesByHash.size, 1);
+    assert.ok(result.entriesByHash.has(hash));
+    assert.equal(calls.length, 2);
+    assert.equal(new URL(calls[1].url).hostname, 'jr.maxvol.pro');
+    assert.equal(calls[1].opt.credentials, 'omit');
+    assert.equal(calls[1].opt.mode, 'cors');
+    assert.equal(calls[1].opt.referrerPolicy, 'no-referrer');
+    for (const call of calls) {
+      assert.equal(call.opt.headers['X-Api-Key'], undefined);
+      assert.equal(call.opt.headers.Authorization, undefined);
+      assert.ok(!call.url.includes('private-test-key'));
+      assert.equal(call.opt.direct_public_parser, undefined);
+    }
+    assert.equal(result.diagnostics[0].route, 'proxy');
+    assert.equal(result.diagnostics[1].route, 'direct');
+  });
+
+  test(`${variant}: timed-out proxy can recover through direct parser`, async () => {
+    let calls = 0;
+    const api = loadPlugin(source, { ...options,
+      setTimeout: (callback) => setTimeout(callback, 5),
+      fetch: (url, opt) => {
+        calls++;
+        if (calls === 1) return new Promise((resolve, reject) => {
+          opt.signal.addEventListener('abort', () => reject({ name: 'AbortError' }));
+        });
+        return Promise.resolve({ status: 200, text: async () => JSON.stringify({ Results: [{ InfoHash: 'b'.repeat(40) }] }) });
+      },
+    });
+    const result = await api.Api.searchPublicTrackers({ title: 'Example' }, new AbortController().signal);
+    assert.equal(result.entriesByHash.size, 1);
+    assert.equal(result.diagnostics[0].status, 'timeout');
+    assert.equal(result.diagnostics[1].status, 'success');
+  });
+
+  test(`${variant}: failed routes preserve HTTP details and try the next parser`, async () => {
+    let calls = 0;
+    const api = loadPlugin(source, { ...options, fetch: async () => {
+      calls++;
+      return calls === 1 ? { status: 503, text: async () => 'Unavailable' }
+        : calls === 2 ? Promise.reject(new TypeError('CORS blocked'))
+        : { status: 200, text: async () => JSON.stringify({ Results: [{ InfoHash: 'c'.repeat(40) }] }) };
+    } });
+    const result = await api.Api.searchPublicTrackers({ title: 'Example' }, new AbortController().signal);
+    assert.equal(calls, 3);
+    assert.equal(result.parser.name, 'Jacred');
+    assert.equal(result.diagnostics[0].status_code, 503);
+    assert.equal(result.diagnostics[1].route, 'direct');
+  });
+
+  test(`${variant}: total network failure exposes route and HTTP status without API keys`, async () => {
+    const api = loadPlugin(source, { ...options, fetch: async () => ({ status: 520, text: async () => 'Upstream failed' }) });
+    api.Config.apiKey = 'private-test-key';
+    await assert.rejects(api.Api.searchPublicTrackers({ title: 'Example' }, new AbortController().signal), (error) => {
+      assert.match(error.message, /MaxVol.*HTTP 520/);
+      assert.match(error.message, /Jacred.*HTTP 520/);
+      assert.match(error.message, /torbox_parser_proxy/);
+      assert.match(error.message, /torbox_parser_direct/);
+      assert.ok(!error.message.includes('private-test-key'));
+      assert.equal(error.diagnostics.length, 4);
+      return true;
+    });
+  });
+
+  test(`${variant}: empty results are distinguished from connection failure`, async () => {
+    let calls = 0;
+    const api = loadPlugin(source, { ...options, fetch: async () => {
+      calls++;
+      return { status: 200, text: async () => '{"Results":[]}' };
+    } });
+    await assert.rejects(api.Api.searchPublicTrackers({ title: 'Example' }, new AbortController().signal), (error) => {
+      assert.match(error.message, /torbox_error_public_parsers_no_matches/);
+      return true;
+    });
+    assert.equal(calls, 2); // A working empty response does not trigger a duplicate direct request.
+  });
+
+  test(`${variant}: user cancellation does not start a direct fallback`, async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    const api = loadPlugin(source, { ...options, fetch: async () => {
+      calls++;
+      controller.abort();
+      throw { name: 'AbortError' };
+    } });
+    await assert.rejects(api.Api.searchPublicTrackers({ title: 'Example' }, controller.signal), { name: 'AbortError' });
+    assert.equal(calls, 1);
   });
 }

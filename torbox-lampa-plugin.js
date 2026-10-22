@@ -2,7 +2,7 @@
  * ---------------------------------------------------------------------
  * Goals met:
  *  - Robust magnet/BTIH parsing (hex & RFC4648 base32 → lower-case hex)
- *  - Full network hardening (proxy required, API key scoped only to TorBox,
+ *  - Full network hardening (TorBox proxy required, key scoped only to TorBox,
  *    timeouts, abort propagation, retries, actionable Noty errors)
  *  - LRU cache with TTL (no cross-title bleed, stale eviction)
  *  - Filters/sort persistence, deduped lists, stable sort, cached-only toggle
@@ -14,7 +14,7 @@
  * --------------------------------------------------------------------- */
 
 try {
-  console.log('[TorBox] boot strap', '51.2.14');
+  console.log('[TorBox] boot strap', '51.2.15');
   (function () {
   'use strict';
 
@@ -24,13 +24,13 @@ try {
   window[PLUGIN_FLAG] = true;
 
   // ───────────────────────────── Constants / Config ─────────────────────────────
-  const VERSION = '51.2.14';
+  const VERSION = '51.2.15';
 
   const CONST = {
     CACHE_LIMIT: 128,
     CACHE_TTL_MS: 10 * 60 * 1000, // 10 minutes
     TORBOX_API_TIMEOUT_MS: 20 * 1000, // 20 seconds
-    PUBLIC_PARSER_TIMEOUT_MS: 5 * 1000, // 5 seconds
+    PUBLIC_PARSER_TIMEOUT_MS: 15 * 1000, // Allow slower TV connections
     PARSER_COOLDOWN_MS: 15 * 60 * 1000, // 15 minutes
     TRACKING_POLL_INTERVAL_MS: 10 * 1000, // 10 seconds
     MAX_DRAW_ITEMS: 300, // Guard against very large result sets
@@ -612,7 +612,7 @@ try {
     };
   })();
 
-  // ───────────────────────────── Networking (via CORS proxy only) ─────────────────────────────
+  // ───────────────────────────── Networking (TorBox via proxy; public parser fallback) ─────────────────────────────
   const Api = (() => {
     const TB_MAIN = 'https://api.torbox.app/v1/api';
 
@@ -681,11 +681,18 @@ try {
     }
 
     async function request(url, opt = {}, outerSignal) {
-      requireProxy();
-
-      const { timeoutMs: optTimeoutMs, is_torbox_api: isTorBoxApiFlag, ...fetchOptions } = opt;
+      const {
+        timeoutMs: optTimeoutMs,
+        is_torbox_api: isTorBoxApiFlag,
+        direct_public_parser: directPublicParserFlag,
+        ...fetchOptions
+      } = opt;
       const isTorBox = isTorBoxApiFlag !== false; // default true (only TorBox gets X-Api-Key)
+      // Direct connections are reserved for credential-free public parser reads.
+      const directParser = !isTorBox && directPublicParserFlag === true;
+      if (!directParser) requireProxy();
       if (isTorBox) requireApiKey();
+      if (outerSignal?.aborted) throw { name: 'AbortError', message: translate('torbox_error_aborted') };
 
       const controller = new AbortController();
       const timeoutMs = Math.max(1, Number(optTimeoutMs) || CONST.TORBOX_API_TIMEOUT_MS);
@@ -695,10 +702,18 @@ try {
 
       const headers = Object.assign({}, fetchOptions.headers || {});
       delete headers.Authorization; // never forward auth headers through proxy
+      delete headers.authorization;
+      delete headers['X-Api-Key'];
+      delete headers['x-api-key'];
       if (isTorBox) headers['X-Api-Key'] = Config.apiKey;
 
-      // Always go through CORS proxy
-      const proxied = buildProxyUrl(Config.proxyUrl, url);
+      // TorBox always uses the proxy; direct parser reads never include a key.
+      const proxied = directParser ? url : buildProxyUrl(Config.proxyUrl, url);
+      if (directParser) {
+        fetchOptions.credentials = 'omit';
+        fetchOptions.mode = 'cors';
+        fetchOptions.referrerPolicy = 'no-referrer';
+      }
 
       try {
         const res = await fetch(proxied, { ...fetchOptions, headers, signal: controller.signal });
@@ -870,91 +885,118 @@ try {
       }
 
       for (const p of passParsers) {
-        if (signal.aborted) break;
+        if (signal.aborted) throw { name: 'AbortError', message: translate('torbox_error_aborted') };
         const qs = new URLSearchParams(qsCommon);
         if (p.key) qs.set('apikey', p.key);
         if (searchYear) qs.set('year', searchYear);
         const url = `https://${p.url}/api/v2.0/indexers/all/results?${qs.toString()}`;
-        const startedAt = Date.now();
+        // The proxy may be unreachable on a particular network even when the
+        // parser itself permits cross-origin browser requests. Retry that public
+        // request directly before abandoning the parser; never do this for TorBox.
+        for (const directPublicParser of [false, true]) {
+          const route = directPublicParser ? 'direct' : 'proxy';
+          const startedAt = Date.now();
 
-        try {
-          LOG('Parser try:', p.name, url);
-          const json = await request(
-            url,
-            { method: 'GET', is_torbox_api: false, timeoutMs: CONST.PUBLIC_PARSER_TIMEOUT_MS },
-            signal
-          );
-          const list = Array.isArray(json?.Results) ? json.Results : [];
-          const normalized = normalizeParserResults(list);
-          const attempt = {
-            name: p.name,
-            domain: p.url,
-            elapsed_ms: Date.now() - startedAt,
-            status: normalized.validCount > 0 ? 'success' : normalized.rawCount > 0 ? 'invalid_payload' : 'empty',
-            raw_count: normalized.rawCount,
-            valid_count: normalized.validCount,
-            invalid_count: normalized.invalidCount,
-            cooldown_until: null,
-            reason: normalized.validCount > 0 ? 'valid_hashes' : normalized.rawCount > 0 ? 'no_valid_hashes' : 'no_results',
-          };
-          parserAttempts.push(attempt);
-          LOG('Parser result:', p.name, {
-            raw: normalized.rawCount,
-            valid: normalized.validCount,
-            invalid: normalized.invalidCount,
-            status: attempt.status,
-          });
-
-          if (normalized.validCount > 0) {
-            ParserHealth.markSuccess(p.url);
-            selectedParser = {
+          try {
+            LOG('Parser try:', p.name, route, url);
+            const json = await request(
+              url,
+              { method: 'GET', is_torbox_api: false, direct_public_parser: directPublicParser, timeoutMs: CONST.PUBLIC_PARSER_TIMEOUT_MS },
+              signal
+            );
+            const list = Array.isArray(json?.Results) ? json.Results : [];
+            const normalized = normalizeParserResults(list);
+            const attempt = {
               name: p.name,
               domain: p.url,
-              valid_count: normalized.validCount,
+              route,
+              elapsed_ms: Date.now() - startedAt,
+              status: normalized.validCount > 0 ? 'success' : normalized.rawCount > 0 ? 'invalid_payload' : 'empty',
               raw_count: normalized.rawCount,
+              valid_count: normalized.validCount,
+              invalid_count: normalized.invalidCount,
+              cooldown_until: null,
+              reason: normalized.validCount > 0 ? 'valid_hashes' : normalized.rawCount > 0 ? 'no_valid_hashes' : 'no_results',
             };
-            setParserTelemetry(parserAttempts, selectedParser);
-            return {
-              parser: selectedParser,
-              entriesByHash: normalized.entriesByHash,
-              diagnostics: parserAttempts.slice(),
-            };
-          }
+            parserAttempts.push(attempt);
+            LOG('Parser result:', p.name, {
+              raw: normalized.rawCount,
+              valid: normalized.validCount,
+              invalid: normalized.invalidCount,
+              status: attempt.status,
+            });
 
-          if (attempt.status === 'invalid_payload') {
-            const health = ParserHealth.markFailure(p.url, attempt.status);
-            attempt.cooldown_until = health?.cooldownUntil ? new Date(health.cooldownUntil).toISOString() : null;
+            if (normalized.validCount > 0) {
+              ParserHealth.markSuccess(p.url);
+              selectedParser = {
+                name: p.name,
+                domain: p.url,
+                valid_count: normalized.validCount,
+                raw_count: normalized.rawCount,
+              };
+              setParserTelemetry(parserAttempts, selectedParser);
+              return {
+                parser: selectedParser,
+                entriesByHash: normalized.entriesByHash,
+                diagnostics: parserAttempts.slice(),
+              };
+            }
+
+            if (attempt.status === 'invalid_payload') {
+              const health = ParserHealth.markFailure(p.url, attempt.status);
+              attempt.cooldown_until = health?.cooldownUntil ? new Date(health.cooldownUntil).toISOString() : null;
+            }
+            // A valid empty/invalid response is a content issue, not a route failure.
+            break;
+          } catch (e) {
+            if (signal.aborted || e?.name === 'AbortError') throw e;
+            const failure = classifyParserFailure(e);
+            const attempt = {
+              name: p.name,
+              domain: p.url,
+              route,
+              elapsed_ms: Date.now() - startedAt,
+              status: failure.status,
+              raw_count: 0,
+              valid_count: 0,
+              invalid_count: 0,
+              cooldown_until: null,
+              reason: failure.reason,
+              status_code: failure.statusCode || null,
+            };
+            if (failure.cooldown && directPublicParser) {
+              const health = ParserHealth.markFailure(p.url, failure.status);
+              attempt.cooldown_until = health?.cooldownUntil ? new Date(health.cooldownUntil).toISOString() : null;
+            }
+            parserAttempts.push(attempt);
+            LOG('Parser failed:', p.name, e.message || e);
+          } finally {
+            setParserTelemetry(parserAttempts, selectedParser);
           }
-        } catch (e) {
-          const failure = classifyParserFailure(e);
-          const attempt = {
-            name: p.name,
-            domain: p.url,
-            elapsed_ms: Date.now() - startedAt,
-            status: failure.status,
-            raw_count: 0,
-            valid_count: 0,
-            invalid_count: 0,
-            cooldown_until: null,
-            reason: failure.reason,
-            status_code: failure.statusCode || null,
-          };
-          if (failure.cooldown) {
-            const health = ParserHealth.markFailure(p.url, failure.status);
-            attempt.cooldown_until = health?.cooldownUntil ? new Date(health.cooldownUntil).toISOString() : null;
-          }
-          parserAttempts.push(attempt);
-          LOG('Parser failed:', p.name, e.message || e);
-        } finally {
-          setParserTelemetry(parserAttempts, selectedParser);
         }
       }
 
       const hadInvalidPayload = parserAttempts.some((attempt) => attempt.status === 'invalid_payload');
       setParserTelemetry(parserAttempts, selectedParser);
-      throw hadInvalidPayload
-        ? { type: 'api', message: translate('torbox_error_public_parsers_invalid') }
-        : { type: 'api', message: translate('torbox_error_public_parsers_empty') };
+      const attempts = parserAttempts.filter((attempt) => attempt.status !== 'cooldown_skip');
+      const finalAttempts = Array.from(new Map(attempts.map((attempt) => [attempt.domain, attempt])).values());
+      const noMatches = finalAttempts.length > 0 && finalAttempts.every((attempt) => attempt.status === 'empty');
+      const details = attempts.map((attempt) => {
+        const route = translate(attempt.route === 'direct' ? 'torbox_parser_direct' : 'torbox_parser_proxy');
+        const reason = attempt.status_code
+          ? `HTTP ${attempt.status_code}`
+          : attempt.status === 'timeout'
+            ? translateWithParams('torbox_error_timeout', { seconds: CONST.PUBLIC_PARSER_TIMEOUT_MS / 1000 })
+            : attempt.status === 'empty'
+              ? translate('torbox_parser_no_results')
+              : attempt.status === 'invalid_payload'
+                ? translate('torbox_error_public_parsers_invalid')
+                : translate('torbox_error_network');
+        return `${Utils.escapeHtml(attempt.name)} (${route}): ${reason}`;
+      }).join('; ');
+      const message = translate(noMatches ? 'torbox_error_public_parsers_no_matches'
+        : hadInvalidPayload ? 'torbox_error_public_parsers_invalid' : 'torbox_error_public_parsers_empty');
+      throw { type: 'api', message: `${message}. ${details}`, diagnostics: parserAttempts.slice() };
     }
 
     async function checkCached(hashes, signal) {
@@ -3032,7 +3074,7 @@ try {
       state.search_query = customTitle;
 
       const movieForSearch = customTitle
-        ? { ...object.movie, title: customTitle, original_title: customTitle, year: '' }
+        ? { ...object.movie, title: customTitle, original_title: customTitle, year: '', release_date: '', first_air_date: '' }
         : object.movie;
 
       const cacheKey = generateKeyForMovie(customTitle);
@@ -3366,6 +3408,14 @@ try {
         ru: 'Сетевая ошибка',
         en: 'Network error',
         uk: 'Мережева помилка',
+      },
+      torbox_parser_direct: { ru: 'напрямую', en: 'direct', uk: 'напряму' },
+      torbox_parser_proxy: { ru: 'через прокси', en: 'via proxy', uk: 'через проксі' },
+      torbox_parser_no_results: { ru: 'нет результатов', en: 'no results', uk: 'немає результатів' },
+      torbox_error_public_parsers_no_matches: {
+        ru: 'По этому названию ничего не найдено. Попробуйте поиск без года',
+        en: 'No matches for this title. Try searching without the year',
+        uk: 'За цією назвою нічого не знайдено. Спробуйте пошук без року',
       },
       torbox_error_public_parsers_empty: {
         ru: 'Публичные парсеры недоступны или вернули пустой список',

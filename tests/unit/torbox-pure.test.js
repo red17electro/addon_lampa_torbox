@@ -733,7 +733,7 @@ test('security and failover guards are present in plugin source', () => {
   assert.match(plugin, /function normalizeParserResults/);
   assert.match(plugin, /if \(normalized\.validCount > 0\)/);
   assert.match(plugin, /ParserHealth\.markFailure/);
-  assert.match(plugin, /PUBLIC_PARSER_TIMEOUT_MS: 5 \* 1000/);
+  assert.match(plugin, /PUBLIC_PARSER_TIMEOUT_MS: 15 \* 1000/);
   assert.match(plugin, /TORBOX_API_TIMEOUT_MS: 20 \* 1000/);
 });
 

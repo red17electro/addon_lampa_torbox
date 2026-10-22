@@ -1,9 +1,47 @@
 const { test, expect } = require('@playwright/test');
 const path = require('node:path');
+const fs = require('node:fs');
 
 // Unlike focus-smoke.spec.js, these tests execute the actual plugin artifacts.
 // Lampa's integration surface is stubbed; no TorBox account/network is used.
 for (const filename of ['torbox-lampa-plugin.js', 'torbox-lampa-plugin.legacy.js']) {
+  test(`${filename}: browser search recovers when the proxy is unreachable`, async ({ page }) => {
+    const requests = [];
+    await page.route('https://lampa.example.test/', (route) => route.fulfill({
+      contentType: 'text/html', body: '<html><head></head><body></body></html>',
+    }));
+    await page.route('https://proxy.example.test/**', (route) => route.abort('failed'));
+    await page.route('https://jr.maxvol.pro/**', (route) => {
+      requests.push(route.request());
+      return route.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' },
+        body: JSON.stringify({ Results: [{ InfoHash: 'a'.repeat(40) }] }),
+      });
+    });
+    await page.goto('https://lampa.example.test/');
+    await page.evaluate(() => {
+      window.Lampa = {
+        Activity: {}, Lang: { add() {}, translate: (key) => key }, Component: { add() {} },
+        Template: { add() {} }, Listener: { follow() {}, remove() {} }, Manifest: {},
+      };
+    });
+    const code = fs.readFileSync(path.resolve(__dirname, '../..', filename), 'utf8');
+    const marker = '(function integrate() {';
+    expect(code.split(marker)).toHaveLength(2);
+    await page.addScriptTag({ content: code.replace(marker, 'window.testApi = { Api, Config };\n' + marker) });
+    const result = await page.evaluate(async () => {
+      testApi.Config.proxyUrl = 'https://proxy.example.test';
+      testApi.Config.apiKey = 'private-test-key';
+      const data = await testApi.Api.searchPublicTrackers({ name: 'Example' }, new AbortController().signal);
+      return { count: data.entriesByHash.size, routes: data.diagnostics.map((attempt) => attempt.route) };
+    });
+    expect(result).toEqual({ count: 1, routes: ['proxy', 'direct'] });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].headers()['x-api-key']).toBeUndefined();
+    expect(requests[0].headers().authorization).toBeUndefined();
+    expect(requests[0].headers().cookie).toBeUndefined();
+    expect(requests[0].headers().referer).toBeUndefined();
+  });
+
   for (const ready of [true, false]) {
     test(`${filename}: ${ready ? 'immediate' : 'deferred'} boot, card button and duplicate-load guard`, async ({ page }) => {
       const errors = [];

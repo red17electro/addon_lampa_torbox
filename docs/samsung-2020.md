@@ -1,7 +1,8 @@
 # Samsung QE55Q80TAUXRU (2020): build and installation
 
 Use `torbox-lampa-plugin.legacy.js` on this TV. The modern file,
-`torbox-lampa-plugin.js`, stays the source of truth and is unchanged.
+`torbox-lampa-plugin.js`, stays the source of truth. Search reliability changes
+apply to both builds.
 Both builds use the same component ID, manifest version and storage keys.
 
 ## Compatibility audit
@@ -111,14 +112,18 @@ is not generally required, but providing it supports both loading methods.
 Choose a host based on a real test from the parents' network; this work does not
 establish that jsDelivr or any other provider is reachable there.
 
-The plugin download host and CORS proxy are separate connections. Moving the
-JavaScript file does not fix an unreachable `workers.dev` proxy. The existing
+The plugin download host and CORS proxy are separate connections. Public parser
+searches retry directly, without credentials, if the proxy route fails. This
+requires the parser to permit CORS for the installed Lampa origin. Each attempt
+has a 15-second timeout, and failures show the parser and route on screen.
+TorBox API calls always use the proxy. Moving the JavaScript file does not fix
+an unreachable `workers.dev` proxy for those calls. The existing
 default is `https://my-torbox-proxy.slonce70.workers.dev`; enter a reachable,
 trusted proxy in Settings → TorBox if necessary. The supplied worker source is
 in `proxy/cloudflare-worker.js`; it can be deployed separately on an accessible
 HTTPS domain. Its runtime syntax is server-side and does not run on the TV.
-It must support OPTIONS and CORS for `X-Api-Key` and Content-Type. Only the proxy
-needs to contact the TorBox API and configured public parsers; playback still
+It must support OPTIONS and CORS for `X-Api-Key` and Content-Type. The proxy needs to contact TorBox and configured public parsers; the direct
+search fallback also needs TV-to-parser access. Playback still
 needs access to the returned media URL.
 
 ## Install and verify on the TV

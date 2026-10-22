@@ -4,7 +4,7 @@
 
 A plugin for [Lampa](https://lampa.mx) that adds torrent streaming via [TorBox.app](https://torbox.app) right from the movie/series card.
 
-Current version: **51.2.14**
+Current version: **51.2.15**
 
 ## Features
 
@@ -37,7 +37,7 @@ the generated file is committed and pushed. Enable only one TorBox plugin entry.
 
 `Settings` → `TorBox`:
 
-- **CORS proxy URL** — the proxy all requests go through. The reference proxy is built in; a URL you enter always takes precedence. Note: the proxy can see your API key, so only use a proxy you trust (HTTPS strongly recommended).
+- **CORS proxy URL** — the proxy used for TorBox and initially for public parser requests. If a parser request fails through the proxy, the plugin retries that public search directly without credentials. The reference proxy is built in; a URL you enter always takes precedence. Note: the proxy can see your API key, so only use a proxy you trust (HTTPS strongly recommended).
 - **API key** — your TorBox API key. Enter your own key; there is no embedded default API key.
 
 Advanced parameters (quality/audio/codec priority, excluded trackers, status polling, video extensions, custom parsers, debug and diagnostics) are hidden from the UI and run on sensible defaults. If needed, they can be overridden via the corresponding `torbox_*` keys in `localStorage`.
@@ -52,6 +52,15 @@ npx wrangler deploy
 ```
 
 If you use custom parsers, add their domains to `ALLOWED_HOSTS` in the worker.
+
+### Search connection failures
+
+Public parsers have a 15-second timeout per connection attempt. Search retries
+a failed proxy connection directly to the parser, without API keys or cookies.
+TorBox API requests always stay behind the proxy. If search still fails, the
+on-screen message names each parser, route and HTTP/timeout/network error.
+A successful empty response is reported separately; try the search without a
+year. The direct path requires the parser to permit CORS from your Lampa origin.
 
 ## TV remote control
 
